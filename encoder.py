@@ -1,5 +1,5 @@
 """
-DIRECT FDM+iMEC ENCODER
+DIRECT FDM+iMEC ENCODER (12-bit blocks, optimized for clear FFT)
 
 Pipeline:
 1. Generate ASK-modulated carriers for each agent (ALICE, BOB, CHARLIE)
@@ -16,6 +16,10 @@ import torch
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
 import pickle
 import sys
+import os
+
+# Disable HF transfer if causing issues
+os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '0'
 
 # Import iMEC encoder
 try:
@@ -26,15 +30,15 @@ except ImportError:
     sys.exit(1)
 
 
-def ask_modulate(bits, freq, length, sample_rate=1.0):
+def ask_modulate(bits, freq, length, sample_rate=100.0):
     """
-    ASK (Amplitude Shift Keying) modulation.
+    ASK (Amplitude Shift Keying) modulation with proper sampling.
     
     Args:
         bits: Binary message [0, 1, 0, 1, ...]
         freq: Carrier frequency (Hz)
         length: Total number of samples
-        sample_rate: Samples per unit time
+        sample_rate: Samples per second
     
     Returns:
         signal: ASK-modulated carrier
@@ -49,9 +53,11 @@ def ask_modulate(bits, freq, length, sample_rate=1.0):
         # Amplitude depends on bit value
         amplitude = 1.0 if bit == 1 else 0.1
         
-        # Generate sinusoidal carrier
-        t = np.arange(end - start)
-        carrier = np.sin(2 * np.pi * freq * t / sample_rate)
+        # Generate sinusoidal carrier with proper time vector
+        # Time duration for this bit segment
+        duration = (end - start) / sample_rate
+        t = np.linspace(0, duration, end - start)
+        carrier = np.sin(2 * np.pi * freq * t)
         
         signal[start:end] = amplitude * carrier
     
@@ -149,7 +155,7 @@ def verify_uniformity(bit_string, name="Bit string"):
 
 def main():
     print("="*80)
-    print("DIRECT FDM+iMEC ENCODER")
+    print("DIRECT FDM+iMEC ENCODER (12-bit blocks)")
     print("="*80)
     
     # ========================================================================
@@ -170,9 +176,9 @@ def main():
         'CHARLIE': 3.0
     }
     
-    # Signal parameters
-    num_samples = 1000
-    sample_rate = 100.0
+    # Signal parameters - OPTIMIZED for clear FFT peaks
+    num_samples = 5000  # 5x longer for ~3 cycles per bit
+    sample_rate = 100.0  # Samples per second
     bits_per_sample = 8  # 256 quantization levels
     
     # GPT-2 context for stegotext
@@ -182,6 +188,9 @@ def main():
     print(f"  Agents: {list(messages.keys())}")
     print(f"  Message length: {len(messages['ALICE'])} bits per agent")
     print(f"  Signal length: {num_samples} samples")
+    print(f"  Sample rate: {sample_rate} Hz")
+    print(f"  Samples per bit: {num_samples / len(messages['ALICE']):.1f}")
+    print(f"  Cycles per bit @ 1Hz: {(num_samples / len(messages['ALICE'])) / sample_rate:.2f}")
     print(f"  Quantization: {bits_per_sample} bits/sample ({2**bits_per_sample} levels)")
     print(f"  Total bits: {num_samples * bits_per_sample}")
     
@@ -201,7 +210,7 @@ def main():
                                   num_samples, sample_rate)
     
     # Superpose (FDM)
-    combined_bias = alice_signal + bob_signal + charlie_signal
+    combined_signal = alice_signal + bob_signal + charlie_signal
     
     print(f"\nGenerated signals:")
     print(f"  ALICE:   {len(alice_signal)} samples @ {agent_frequencies['ALICE']} Hz")
@@ -209,10 +218,10 @@ def main():
     print(f"  CHARLIE: {len(charlie_signal)} samples @ {agent_frequencies['CHARLIE']} Hz")
     
     print(f"\nCombined signal (superposition):")
-    print(f"  Samples: {len(combined_bias)}")
-    print(f"  Range: [{combined_bias.min():.3f}, {combined_bias.max():.3f}]")
-    print(f"  Mean: {combined_bias.mean():.3f}")
-    print(f"  Std: {combined_bias.std():.3f}")
+    print(f"  Samples: {len(combined_signal)}")
+    print(f"  Range: [{combined_signal.min():.3f}, {combined_signal.max():.3f}]")
+    print(f"  Mean: {combined_signal.mean():.3f}")
+    print(f"  Std: {combined_signal.std():.3f}")
     print(f"  ✓ Superposition creates Gaussian-like distribution")
     
     # ========================================================================
@@ -223,11 +232,11 @@ def main():
     print("STEP 2: QUANTIZATION (SIGNAL → BITS)")
     print("="*80)
     
-    bias_bits, quant_metadata = quantize_to_bits(combined_bias, bits_per_sample)
+    signal_bits, quant_metadata = quantize_to_bits(combined_signal, bits_per_sample)
     
     print(f"\n✓ Quantization complete:")
     print(f"  Input: {num_samples} samples")
-    print(f"  Output: {len(bias_bits)} bits")
+    print(f"  Output: {len(signal_bits)} bits")
     print(f"  Bits per sample: {bits_per_sample}")
     print(f"  Quantization levels: {quant_metadata['quantization_levels']}")
     
@@ -240,21 +249,21 @@ def main():
     print("="*80)
     print("⚠️  CRITICAL: Making distribution uniform for iMEC!")
     
-    encrypted_bits, one_time_pad_key = encrypt_with_one_time_pad(bias_bits)
+    encrypted_bits, one_time_pad_key = encrypt_with_one_time_pad(signal_bits)
     
     print(f"\n✓ Encryption complete:")
-    print(f"  Plaintext: {len(bias_bits)} bits")
+    print(f"  Plaintext: {len(signal_bits)} bits")
     print(f"  Ciphertext: {len(encrypted_bits)} bits")
     print(f"  Key: {len(one_time_pad_key)} bits")
     
     verify_uniformity(encrypted_bits, "Ciphertext")
     
     # ========================================================================
-    # STEP 4: iMEC ENCODING
+    # STEP 4: iMEC ENCODING (12-BIT BLOCKS)
     # ========================================================================
     
     print("\n" + "="*80)
-    print("STEP 4: iMEC ENCODING (PERFECT SECURITY)")
+    print("STEP 4: iMEC ENCODING (PERFECT SECURITY) - 12-BIT BLOCKS")
     print("="*80)
     
     print("\nLoading GPT-2...")
@@ -266,11 +275,12 @@ def main():
     model.to(device)
     print(f"✓ GPT-2 loaded on {device}")
     
-    print("\nInitializing iMEC encoder...")
+    print("\nInitializing iMEC encoder with 12-bit blocks...")
     imec = MinEntropyCouplingSteganography(block_size_bits=12)
-    print(f"✓ iMEC initialized with 16-bit blocks")
+    print(f"✓ iMEC initialized (4,096 values per block)")
     
-    n_blocks = len(encrypted_bits) // 16
+    # CRITICAL: Use 12-bit blocks
+    n_blocks = len(encrypted_bits) // 12
     print(f"\nEncoding {len(encrypted_bits)} bits ({n_blocks} blocks) with iMEC...")
     
     imec_tokens = imec.encode_imec(
@@ -283,7 +293,7 @@ def main():
     print(f"\n✓ iMEC encoding complete:")
     print(f"  Input: {len(encrypted_bits)} bits")
     print(f"  Output: {len(imec_tokens)} tokens")
-    print(f"  Compression: {len(encrypted_bits) / len(imec_tokens):.2f} bits/token")
+    print(f"  Efficiency: {len(encrypted_bits) / len(imec_tokens):.2f} bits/token")
     
     stegotext = tokenizer.decode(imec_tokens)
     print(f"\nStegotext preview (first 200 chars):")
@@ -315,12 +325,11 @@ def main():
         # Decryption key (must be kept secret!)
         'one_time_pad_key': one_time_pad_key,
         
-        # iMEC parameters
-        'n_blocks': n_blocks,
-        'block_size_bits': 16,
+        # iMEC parameters (CRITICAL: 12-bit blocks!)
+        'block_size_bits': 12,
         
         # For verification
-        'combined_signal': combined_bias,
+        'combined_signal': combined_signal,
         'individual_signals': {
             'ALICE': alice_signal,
             'BOB': bob_signal,
@@ -336,6 +345,7 @@ def main():
     print(f"\nData saved:")
     print(f"  - Stegotext: {len(imec_tokens)} tokens")
     print(f"  - One-time pad key: {len(one_time_pad_key)} bits")
+    print(f"  - Block size: 12 bits")
     print(f"  - Metadata: frequencies, quantization params, etc.")
     
     # ========================================================================
@@ -349,14 +359,19 @@ def main():
     print(f"\nPipeline summary:")
     print(f"  1. Messages:       3 agents × {len(messages['ALICE'])} bits")
     print(f"  2. FDM:            {num_samples} samples (superposition)")
-    print(f"  3. Quantization:   {len(bias_bits)} bits")
+    print(f"  3. Quantization:   {len(signal_bits)} bits")
     print(f"  4. Encryption:     {len(encrypted_bits)} bits (uniform)")
-    print(f"  5. iMEC:           {len(imec_tokens)} secure tokens")
+    print(f"  5. iMEC (12-bit):  {len(imec_tokens)} secure tokens")
+    
+    print(f"\nSignal quality metrics:")
+    print(f"  - Samples per bit: {num_samples / len(messages['ALICE']):.1f}")
+    print(f"  - Cycles/bit @ 1Hz: {(num_samples / len(messages['ALICE'])) / sample_rate:.2f}")
+    print(f"  - Expected FFT peaks: 1.0, 2.0, 3.0 Hz")
     
     print(f"\nNext steps:")
     print(f"  1. Transfer 'encoded_data.pkl' to receiver")
-    print(f"  2. Run decoder: python decoder_direct_fdm_imec.py")
-    print(f"  3. Receiver will recover messages via FFT analysis")
+    print(f"  2. Run decoder: python decoder_direct_fdm_imec_12bit.py")
+    print(f"  3. Check fft_analysis.png for clear frequency peaks!")
     
     print("\n" + "="*80)
 
